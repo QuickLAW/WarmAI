@@ -1,87 +1,148 @@
-"""
-事件总线模块（单例模式）
-功能：
-- 提供事件分发机制
-- 支持动态注册/移除处理器
-- 统一管理事件处理逻辑
+import asyncio
+import inspect
+import contextvars
+from typing import (
+    Any, Awaitable, Callable, ClassVar, Generic, Optional, Type, TypeVar, Union
+)
 
-维护建议：
-1. 保持总线与具体业务逻辑解耦
-2. 确保事件类型定义清晰
-3. 注意线程安全问题（如果涉及异步）
-"""
+# 上下文变量用于访问当前事件
+current_event = contextvars.ContextVar('current_event')
 
-from typing import Callable, Dict, List, Any
-from nonebot.log import logger
+E = TypeVar('E', bound='Event')
+EventHandler = Union[
+    Callable[..., Optional[Any]],
+    Callable[..., Awaitable[Optional[Any]]]
+]
 
-class Bus:
-    """
-    事件总线类（单例模式）
-    功能：
-    - 管理事件处理器
-    - 分发事件到对应的处理器
-    """
+class HandlerList(Generic[E]):
+    """带优先级的事件处理器容器"""
+    def __init__(self) -> None:
+        self._handlers: list[tuple[int, Callable[..., Any]]] = []
 
-    _instance = None  # 单例实例
+    def add(self, handler: Callable[..., Any], priority: int = 0) -> None:
+        """添加带优先级的处理器"""
+        if not callable(handler):
+            raise TypeError("Handler must be callable")
+        self._handlers.append((priority, handler))
+        self._handlers.sort(key=lambda x: (-x[0], id(x[1])))  # 稳定排序
 
-    def __new__(cls, *args, **kwargs):
-        """确保只有一个实例"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        """初始化单例实例"""
-        if self._initialized:
-            return
-        self._handlers: Dict[str, List[Callable]] = {}  # 存储事件类型与处理器的映射
-        self._initialized = True
-
-    def register(self, event_type: str, handler: Callable):
-        """
-        注册事件处理器
+    async def invoke(self, *args: Any, **kwargs: Any) -> bool:
+        """执行所有处理器"""
+        event = current_event.get()
         
-        参数：
-        - event_type: 事件类型（如 "private_message"）
-        - handler: 处理函数，需接受事件数据作为参数
-        """
-        if event_type not in self._handlers:
-            self._handlers[event_type] = []
-        self._handlers[event_type].append(handler)
-        logger.info(f"注册处理器：{event_type} -> {handler.__name__}")
+        for _, handler in self._handlers:
+            if event.is_cancelled:
+                return True
 
-    def unregister(self, event_type: str, handler: Callable):
-        """
-        移除事件处理器
-        
-        参数：
-        - event_type: 事件类型
-        - handler: 要移除的处理函数
-        """
-        if event_type in self._handlers:
-            self._handlers[event_type] = [
-                h for h in self._handlers[event_type] if h != handler
-            ]
-            logger.info(f"移除处理器：{event_type} -> {handler.__name__}")
-
-    async def dispatch(self, event_type: str, data: Any):
-        """
-        分发事件
-        
-        参数：
-        - event_type: 事件类型
-        - data: 事件数据
-        """
-        if event_type not in self._handlers:
-            logger.warning(f"未找到 {event_type} 的处理器")
-            return
-
-        for handler in self._handlers[event_type]:
             try:
-                await handler(data)  # 异步调用处理器
+                result = handler(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    await result
             except Exception as e:
-                logger.error(f"处理器 {handler.__name__} 执行失败: {str(e)}")
+                if not event.handle_exception(e):
+                    raise
 
-# 全局单例实例
-bus = Bus()
+        return event.is_cancelled
+
+def priority(p: int) -> Callable[[EventHandler], EventHandler]:
+    """优先级装饰器"""
+    def decorator(func: EventHandler) -> EventHandler:
+        setattr(func, "__event_priority__", p)
+        return func
+    return decorator
+
+class EventMeta(type):
+    """事件类的元类"""
+    def __new__(cls, name: str, bases: tuple[type, ...], attrs: dict):
+        new_class = super().__new__(cls, name, bases, attrs)
+        new_class.handlers = HandlerList[new_class]()  # type: ignore
+        return new_class
+
+class Event(metaclass=EventMeta):
+    """事件基类"""
+    handlers: ClassVar[HandlerList]
+    is_cancelled: bool = False
+
+    @classmethod
+    def on(cls: Type[E], priority: int = 0) -> Callable[[EventHandler], EventHandler]:
+        """事件注册装饰器工厂"""
+        def decorator(func: EventHandler) -> EventHandler:
+            cls.handlers.add(func, priority)
+            return func
+        return decorator
+
+    async def _invoke(self, *args: Any, **kwargs: Any) -> bool:
+        """触发事件的实际实现"""
+        self.is_cancelled = False  # 重置取消状态
+        token = current_event.set(self)
+        try:
+            return await self.__class__.handlers.invoke(*args, **kwargs)
+        finally:
+            current_event.reset(token)
+
+    def trigger(self, *args: Any, **kwargs: Any) -> None:
+        """同步触发入口（仅限非异步环境使用）"""
+        try:
+            # 检测是否在运行中的事件循环
+            asyncio.get_running_loop()
+            raise RuntimeError("Cannot use trigger() in async context. Use async_trigger() instead.")
+        except RuntimeError:
+            # 没有运行中的事件循环
+            asyncio.run(self._invoke(*args, **kwargs))
+
+    async def async_trigger(self, *args: Any, **kwargs: Any) -> None:
+        """异步触发入口"""
+        await self._invoke(*args, **kwargs)
+
+    def cancel(self) -> None:
+        """
+        取消事件传播
+        
+        注意：
+        - 此方法仅在事件处理过程中有效。
+        - 取消事件后，后续的处理器将不再执行。
+        """
+        self.is_cancelled = True
+
+    def handle_exception(self, exc: Exception) -> bool:
+        """异常处理（子类可重写）"""
+        return False
+
+# 使用示例
+class LoginEvent(Event):
+    def handle_exception(self, exc: Exception) -> bool:
+        print(f"处理事件异常: {exc}")
+        return True
+
+class User:
+    def __init__(self, username: str):
+        self.username = username
+
+        
+@LoginEvent.on(priority=2)
+def security_check(var1: User, var2: Any):
+    event: LoginEvent = current_event.get()
+    if "admin" in var1.username:
+        print("安全检测通过")
+    else:
+        event.cancel()
+        print("安全检测失败!")
+
+
+
+async def main():
+
+    user = User("admin")
+    event = LoginEvent()
+    
+    # 正确的异步触发方式
+    await event.async_trigger(user, "192.168.1.1", log_prefix="调试信息")
+
+if __name__ == "__main__":
+    # 正确的同步触发示例
+    user = User("admin")
+    login_event = LoginEvent()
+    login_event.trigger(user, "10.0.0.1")  # 在同步环境中使用
+    
+    # 正确的异步入口
+    asyncio.run(main())

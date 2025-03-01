@@ -9,9 +9,11 @@
 2. 避免在此实现业务逻辑
 """
 from .models import ConversationHistory
-from .handlers import ai_handlers, command_handler, conversation_handler
+from .handlers import *
 from .managers import conversation_manager, model_manager, sql_manager
 from .protocal import init
+from .service import *
+from .triggers import *
 
 from nonebot.plugin import PluginMetadata
 

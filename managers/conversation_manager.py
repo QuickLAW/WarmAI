@@ -1,5 +1,5 @@
 import json
-from typing import Dict
+from typing import Dict, List
 
 from ..config import config
 from ..models import ConversationHistory
@@ -16,24 +16,27 @@ class ConversationManager:
             cls._conversations: Dict[str, ConversationHistory] = {}
         return cls._instance
     
-    def get_history(self, user_id: str) -> ConversationHistory:
+    def get_history(self, user_id: str) -> List[ConversationHistory]:
         """
         获取用户的对话历史
 
         :param user_id: 用户ID
         :return: ConversationHistory对象
         """
-        if user_id in self._conversations:
-            return self._conversations[user_id]
-        else:
-            history = SQLiteManager().query(config.db_user_table_name, ["conversation_history"], "user_id", [user_id])
-            if history:
-                return ConversationHistory(**json.loads(history[0][0]))
-            else:
-                return ConversationHistory()
-        
+        history = SQLiteManager().query(table_name=f'"{user_id}_conversations"', dump=True)
 
-    def update_conversation(self, user_id: str, conversation: ConversationHistory):
+        if history:
+            return [ConversationHistory(
+                user_id=h["user_id"],
+                timestamp=h["timestamp"],
+                message_content=h["message_content"],
+                is_recalled=h["is_recalled"],
+                is_ai=h["is_ai"]
+                ) for h in history]
+        else:
+            return []
+
+    def update_conversation(self, user_id: str, new_conversation: ConversationHistory):
         """
         保存对话至数据库
         ***（完全覆盖）***
@@ -41,7 +44,7 @@ class ConversationManager:
         :param user_id: 用户ID
         :param conversation: 对话
         """
-        SQLiteManager().upsert(config.db_user_table_name, {"conversation_history": conversation.to_json(), "user_id": user_id}, ["user_id"])
+        SQLiteManager().insert(table_name=f'"{user_id}_conversations"', data=new_conversation.to_dict())
 
     def add_new_conversation(self, user_id: str, new_conversation: ConversationHistory):
         """
@@ -51,9 +54,8 @@ class ConversationManager:
         :param user_id: 用户ID
         :param new_conversation: 新的对话
         """
-        history: ConversationHistory = self.get_history(user_id)
-        history.add_message(new_conversation)
-        SQLiteManager().upsert(config.db_user_table_name, {"conversation_history": history.to_json(), "user_id": user_id}, ["user_id"])
+
+        SQLiteManager().insert(table_name=f'"{user_id}_conversations"', data=new_conversation.to_db_dict())
 
     def clear_conversation(self, user_id: str):
         """清除用户的对话"""

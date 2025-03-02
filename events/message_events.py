@@ -11,6 +11,14 @@ class MessageReceivedEvent(Event):
         return True
 
 class MessageSentEvent(Event):
+    '''
+    消息发送事件
+    
+    参数：
+    - event: 消息事件
+    - matcher: 消息匹配器
+    - response: 回复内容
+    '''
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super().__new__(cls)

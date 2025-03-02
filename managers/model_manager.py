@@ -13,7 +13,10 @@
 2. 核心业务流程修改需谨慎
 """
 
-from typing import Dict, Callable
+from datetime import datetime
+from typing import Dict, Callable, List
+
+from .user_manager import UserManager
 
 from .conversation_manager import ConversationManager
 from .sql_manager import SQLiteManager
@@ -42,7 +45,6 @@ class ModelManager:
             cls._instance = super(ModelManager, cls).__new__(cls)
             cls._handlers: Dict[str, Callable] = {}
             cls._current_model = config.default_model
-            cls._personality_templates = config.personality_templates
             cls._instance._init_handlers()
         return cls._instance
 
@@ -74,6 +76,7 @@ class ModelManager:
         self,
         user_id: str,
         message: str,
+        time: int
     ) -> str:
         """
         处理用户消息的完整流程
@@ -81,70 +84,90 @@ class ModelManager:
         参数：
         - user_id: 用户唯一标识
         - message: 用户消息内容
-        - db_get_history: 获取历史记录的函数
-        - db_save_history: 保存历史记录的函数
         
         返回：
         - 生成的回复内容
         """
+        # 先保存消息至数据库
+        try:
+            # 保存消息至数据库
+            ConversationManager().add_new_conversation(
+                user_id=user_id,
+                new_conversation=ConversationHistory(
+                    user_id=user_id,
+                    timestamp=time,
+                    message_content=message,
+                    is_recalled=False,
+                    is_ai=False
+                )
+            )
+        except Exception as e:
+            logger.exception("消息保存流程异常")
         try:
             # 获取对话上下文
-            history: ConversationHistory = ConversationManager().get_history(user_id)
+            history: List[ConversationHistory] = ConversationManager().get_history(user_id)
+            user_config = UserManager().get_user_config(user_id)
+            personality = user_config["personality"]
             
             # 构建提示词
             prompt = self._build_prompt(
-                message=message,
-                personality=history.personality,
-                history=history.messages
+                personality=personality,
+                history=history
             )
             
             # 调用模型生成
             handler: BaseModelHandler = self._handlers[self._current_model]
-            response_list = await handler.generate(prompt, history)
+            response_list = await handler.generate(prompt, user_id)
             
             if response_list[1] == -1:
                 return response_list[0]
 
             response = response_list[0]
-            # 更新对话历史
-            self._update_history(history, message, response)
-            ConversationManager().update_conversation(user_id, history)
             
             return response
         except Exception as e:
             logger.exception("消息处理流程异常")
             return "服务暂时不可用，请稍后重试"
 
-    def _build_prompt(self, message: str, personality: str, history: list) -> str:
+    def _build_prompt(self, personality: str, history: List[ConversationHistory]) -> List:
         """
         构建提示词
         
         参数：
-        - message: 用户消息内容
-        - personality: 性格模板名称
-        - history: 对话历史记录
+        - personality: 性格模板内容
+        - history: 对话历史记录列表
         
         返回：
         - 构建好的提示词
+        可以直接作为json格式发送给模型
         """
-        template = self._personality_templates.get(
-            personality,
-            self._personality_templates["default"]
-        )
+        if not personality:
+            personality = config.personality_default
         
-        prompt = [
-            f"系统角色：{template}",
-            "\n对话历史："
-        ]
+        prompt = [{"role": "system", "content": datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n" + personality}]
         
         # 保留最近N条历史
+        history = history[-min(config.max_history_length, len(history)) :]
+        is_current = history[0].to_dict()["is_ai"]
+        current_user_conversation = ""
         for msg in history[-config.max_history_length :]:
-            prompt.append(f"{msg['role']}: {msg['content']}")
+            if is_current != msg.to_dict()["is_ai"]:
+                if is_current:
+                    prompt.append({"role": "assistant", "content": current_user_conversation})
+                else:
+                    prompt.append({"role": "user", "content": current_user_conversation})
+                current_user_conversation = ""
+                is_current = msg.to_dict()["is_ai"]
+            current_user_conversation += msg.to_conversation() + "\n\n"
+        
+        if history[0].to_dict()["is_ai"]:
+            prompt.append({"role": "assistant", "content": current_user_conversation})
+        else:
+            prompt.append({"role": "user", "content": current_user_conversation})
             
-        prompt.append(f"\n当前消息：{message}")
-        return "\n".join(prompt)
+        return prompt
 
-    def _update_history(self, history: ConversationHistory, message: str, response: str):
+    def update_history(self, history: ConversationHistory, message: str, response: str):
         """
         更新对话历史
         

@@ -23,7 +23,6 @@ from nonebot import get_driver
 class PluginConfig(BaseSettings):
     """插件配置类"""
 
-    ai_system: str = "你叫落叶，是网络上的一个网友，回复的语言习惯要符合日常网友的语气"
 
     # OpenAI相关配置
     openai_api_key: str = ""
@@ -42,24 +41,18 @@ class PluginConfig(BaseSettings):
 
     # 通用配置
     default_model: str = "doubao"
-    max_history_length: int = 10  # 最大对话历史长度
+    max_history_length: int = 20  # 最大对话历史长度
     temperature: float = 0.7  # 模型温度参数
     
-    # 性格模板配置
-    personality_templates: dict = {
-        "default": "你是一个有帮助的助手",
-        "scientist": "你是一个严谨的科学家，用专业术语回答",
-        "friend": "用朋友般的轻松语气对话"
-    }
+    personality_default: str = "你叫落叶，是一位抽象玩梗的网友"
 
     # 数据库配置
     db_path: str = "./data/warmai/data.db"
 
-    db_user_table_name: str = "user"
-    db_user_table_columns: List[str] = ["id INTEGER PRIMARY KEY AUTOINCREMENT", "user_id TEXT UNIQUE", "conversation_history TEXT"]
+    db_user_conversations_table_columns: List[str] = ["id INTEGER PRIMARY KEY AUTOINCREMENT", "user_id TEXT", "timestamp INTEGER", "message_content TEXT", "sender TEXT", "is_recalled INTEGER", "is_ai INTEGER"]
 
     db_user_config_table_name: str = "user_config"
-    db_user_config_table_columns: List[str] = ["id INTEGER PRIMARY KEY AUTOINCREMENT", "user_id TEXT UNIQUE", "personality TEXT", "temperature REAL", "max_tokens INTEGER", "model_name TEXT"] 
+    db_user_config_table_columns: List[str] = ["user_id INTEGER PRIMARY KEY", "personality TEXT", "temperature REAL", "max_history_length INTEGER"] 
 
 
     # 管理员用户ID列表

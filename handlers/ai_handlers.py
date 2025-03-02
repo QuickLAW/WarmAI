@@ -17,12 +17,14 @@
 import aiohttp
 import openai
 from typing import List, Optional
+
+from ..managers.user_manager import UserManager
 from ..config import config, logger
 from ..models import ConversationHistory
 
 class BaseModelHandler:
     """模型处理器抽象基类"""
-    async def generate(self, prompt: str, history: ConversationHistory) -> List:
+    async def generate(self, prompt: List, user_id: str) -> List:
         """
         生成回复的通用接口
         
@@ -46,17 +48,14 @@ class OpenAIModelHandler(BaseModelHandler):
         )
         self.model_name = model_name
 
-    async def generate(self, prompt: str, history: ConversationHistory) -> List:
+    async def generate(self, prompt: List, user_id: str) -> List:
         """调用OpenAI API生成回复"""
         try:
-            messages = [
-                {"role": "system", "content": config.ai_system},
-                {"role": "user", "content": prompt}
-            ]
+            temperature = UserManager().get_user_config(user_id)["temperature"]
             response = await self.client.chat.completions.create(
                 model=self.model_name,
-                messages=messages,
-                temperature=config.temperature
+                messages=prompt,
+                temperature=temperature
             )
             return [response.choices[0].message.content, 1]
         except Exception as e:
@@ -72,17 +71,14 @@ class DeepSeekModelHandler(BaseModelHandler):
         )
         self.model_name = model_name
 
-    async def generate(self, prompt: str, history: ConversationHistory) -> List:
+    async def generate(self, prompt: List, user_id: str) -> List:
         """调用DeepSeek API生成回复"""
         try:
-            messages = [
-                {"role": "system", "content": config.ai_system},
-                {"role": "user", "content": prompt}
-            ]
+            temperature = UserManager().get_user_config(user_id)["temperature"]
             response = await self.client.chat.completions.create(
                 model=self.model_name,
-                messages=messages,
-                temperature=config.temperature
+                messages=prompt,
+                temperature=temperature
             )
             return [response.choices[0].message.content, 1]
         except Exception as e:
@@ -94,10 +90,11 @@ class DoubaoModelHandler(BaseModelHandler):
     def __init__(self, model_name: str):
         self.api_key = config.doubao_api_key
         self.model_name = model_name
-        self.api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        self.api_url = config.doubao_base_url
 
-    async def generate(self, prompt: str, history: ConversationHistory) -> List:
+    async def generate(self, prompt: List, user_id: str) -> List:
         """调用Doubao原生API生成回复"""
+        temperature = UserManager().get_user_config(user_id)["temperature"]
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -105,11 +102,8 @@ class DoubaoModelHandler(BaseModelHandler):
         
         payload = {
             "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": config.ai_system},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": config.temperature
+            "messages": prompt,
+            "temperature": temperature
         }
 
         try:

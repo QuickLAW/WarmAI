@@ -1,126 +1,98 @@
-"""
-数据模型定义
-包含：
-- ConversationHistory：用户对话历史数据结构
-- 其他数据实体定义
-
-维护建议：
-1. 数据结构变更时需同步更新数据库结构
-2. 保持与业务逻辑解耦
-"""
-
+from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+from typing import List
 import json
-from pydantic import BaseModel, model_validator
-from typing import List, Dict, Any, Optional, Union
 
 class ConversationHistory(BaseModel):
     """
-    用户对话历史记录模型（支持字符串初始化）
+    严格手动初始化的对话消息模型
     
-    属性：
-    - messages: 消息列表，格式为 [{"role": "user/assistant", "content": "消息内容"}, ...]
-    - personality: 当前使用的性格模板名称
-    
-    使用方式：
-    1. 常规初始化：ConversationHistory(messages=[...], personality="...")
-    2. 字符串初始化：ConversationHistory("包含完整数据的JSON字符串")
+    属性（全部必须显式指定）：
+    user_id: str = 用户标识（1-64字符）
+    timestamp: int = 秒级时间戳（2000-2038年间）
+    message_content: str = 消息内容（1-2000字符）
+    is_recalled: bool = 是否撤回
     """
-    messages: List[Dict[str, str]] = []
-    personality: str = "default"
+    user_id: str = Field(
+        ..., 
+        min_length=1,
+        max_length=64,
+        description="必须提供用户ID"
+    )
+    timestamp: int = Field(
+        ...,
+        ge=946684800,  # 2000-01-01
+        le=2147483647,  # 2038年上限
+        description="必须提供有效时间戳"
+    )
+    message_content: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="必须提供消息内容"
+    )
+    is_recalled: bool = Field(
+        ...,
+        description="必须明确指定撤回状态"
+    )
+    is_ai: bool = Field(
+       ...,
+        description="必须明确指定是否为AI消息" 
+    )
 
-    @model_validator(mode='before')
+    @field_validator('timestamp')
     @classmethod
-    def validate_string_init(cls, data: Any) -> dict:
-        """支持字符串初始化验证器"""
-        if isinstance(data, str):
-            try:
-                # 尝试解析字符串为字典
-                parsed = json.loads(data)
-                if isinstance(parsed, dict):
-                    return parsed
-                # 兼容旧版纯消息列表格式
-                if isinstance(parsed, list):
-                    return {"messages": parsed, "personality": "default"}
-            except json.JSONDecodeError:
-                pass
-        return data
+    def validate_timestamp(cls, v: int) -> int:
+        """二次验证时间戳合理性"""
+        if v > int(datetime.now().timestamp()) + 86400:
+            raise ValueError("时间戳不能超过未来24小时")
+        return v
 
-    def add_message(
-        self,
-        message: Union['ConversationHistory', str, Dict[str, str]],
-        content: Optional[str] = None
-    ):
-        """
-        添加消息的增强方法（支持三种入参形式）
-        
-        参数形式：
-        1. 添加单个消息（兼容旧版）: add_message(role, content)
-        2. 添加消息字典: add_message({"role": "...", "content": "..."})
-        3. 合并其他对话历史对象: add_message(other_conversation)
-        """
-        # 类型判断分支
-        if isinstance(message, ConversationHistory):
-            # 合并对话历史对象
-            self._merge_conversation(message)
-        elif isinstance(message, dict):
-            # 添加消息字典
-            self._add_message_dict(message)
-        elif content is not None:
-            # 添加角色+内容（旧版方式）
-            self._add_single_message(str(message), content)
-        else:
-            raise TypeError("不支持的参数类型")
+    def to_dict(self) -> dict:
+        """转换为数据库存储格式"""
+        return self.model_dump()
 
-    def _add_single_message(self, role: str, content: str):
-        """添加单个消息（原始实现）"""
-        self.messages.append({"role": role, "content": content})
-
-    def _add_message_dict(self, message_dict: Dict[str, str]):
-        """添加消息字典"""
-        if not all(k in message_dict for k in ("role", "content")):
-            raise ValueError("消息字典必须包含 role 和 content 字段")
-        self.messages.append(message_dict)
-
-    def _merge_conversation(self, other: 'ConversationHistory'):
-        """合并其他对话历史"""
-        self.messages.extend(other.messages)
-        # 可选：更新性格模板（根据业务需求）
-        # self.personality = other.personality  
-
-    def to_json(self) -> str:
-        """
-        序列化为完整JSON字符串（包含元数据）
-        
-        :return: 完整JSON字符串
-        """
-        return self.model_dump_json()
-
-    def to_message_string(self) -> str:
-        """
-        仅序列化消息列表（兼容旧格式）
-        
-        :return: 消息列表的JSON字符串
-        """
-        return json.dumps(self.messages, ensure_ascii=False)
+    def to_conversation(self) -> str:
+        """转换为对话格式"""
+        strftime = datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        is_recalled = "此条消息已撤回" if self.is_recalled else ""
+        return f"{strftime}, {is_recalled}: {self.message_content}"
     
-    def update(self, messages: List[Dict[str, str]], personality: str):
-        """
-        更新完整对话记录
-        
-        :param messages: 消息列表
-        :param personality: 性格模板名称
-        """
-        self.messages = messages
-        self.personality = personality
+    def to_db_dict(self) -> dict:
+        """转换为数据库存储格式"""
+        export_dict = self.model_dump()
+        export_dict["is_recalled"] = int(export_dict["is_recalled"])
+        export_dict["is_ai"] = int(export_dict["is_ai"])
+        return export_dict
+    
+    def from_db_dict(self, db_dict: dict):
+        """从数据库字典加载数据"""
+        self.user_id = db_dict["user_id"]
+        self.timestamp = db_dict["timestamp"]
+        self.message_content = db_dict["message_content"]
+        self.is_recalled = bool(db_dict["is_recalled"])
+        self.is_ai = bool(db_dict["is_ai"])
 
-    def update_from_json(self, data: str):
-        """
-        从JSON字符串更新数据
         
-        :param data: 完整JSON字符串
-        """
-        parsed = json.loads(data)
-        # 使用Pydantic的模型验证机制
-        new_obj = self.model_validate(parsed)
-        self.messages = new_obj.messages
-        self.personality = new_obj.personality
+
+# 使用示例
+if __name__ == "__main__":
+    # 正确的手动初始化
+    msg1 = ConversationHistory(
+        user_id="u123",
+        timestamp=1695100000,
+        message_content="手动指定内容",
+        is_recalled=False,
+        is_ai=False
+    )
+
+
+    # 从数据库记录加载
+    db_data = {
+        "user_id": "u456",
+        "timestamp": 1695200000,
+        "message_content": "数据库加载内容",
+        "is_recalled": True,
+        "is_ai": False
+    }
+    print(msg1.to_dict())

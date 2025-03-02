@@ -13,24 +13,36 @@ class SQLiteManager:
     _instance = None
 
     def __new__(cls):
-        """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls.db_path = config.db_path
+            # 实例属性而非类属性
+            cls._instance.db_path = config.db_path
             cls._instance._init_database()
         return cls._instance
 
     def _init_database(self):
-        """初始化数据库连接"""
-        self.create_db()
-
-    def create_db(self):
-        """创建数据库连接"""
+        """单例初始化时仅执行一次的连接"""
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
+        self.conn.execute("PRAGMA foreign_keys = ON")  # 启用外键约束
         logger.info(f"Connected to database at {self.db_path}")
 
+    def create_table(self, table_name: str, columns: list, constraints: list = None):
+        """创建表（移除冗余的 create_db 调用）"""
+        try:
+            column_defs = ", ".join(columns)
+            if constraints:
+                column_defs += ", " + ", ".join(constraints)
+            sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({column_defs})"
+            self.cursor.execute(sql)
+            self.conn.commit()  # 显式提交
+            logger.debug(f"Executed SQL: {sql}")
+        except sqlite3.Error as e:
+            logger.error(f"创建表失败: {str(e)}")
+            self.conn.rollback()
+            raise
+        
     def create_table(self, table_name: str, columns: List[str], constraints: List[str] = None):
         """
         创建数据表
@@ -185,6 +197,18 @@ class SQLiteManager:
         self.conn.commit()
         return self.cursor
 
+    def check_table_exists(self, table_name: str) -> bool:
+        """
+        检查表是否存在
+
+        :param table_name: 表名称
+        :return: 表是否存在
+        """
+        query = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+        self.cursor.execute(query)
+        result = self.cursor.fetchone()
+        return result is not None
+
     def close(self):
         """关闭数据库连接"""
         self.conn.close()
@@ -195,44 +219,5 @@ class SQLiteManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-
-# 使用示例
-if __name__ == "__main__":
-    db = SQLiteManager()
-    
-    # 创建表
-    db.create_table(
-        "users",
-        [
-            "id INTEGER PRIMARY KEY AUTOINCREMENT",
-            "username TEXT UNIQUE NOT NULL",
-            "email TEXT",
-            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-        ]
-    )
-    
-    # 插入数据
-    user_id = db.insert("users", {
-        "username": "john_doe",
-        "email": "john@example.com"
-    })
-    
-    # 更新插入
-    db.upsert("users", 
-        {"username": "john_doe", "email": "new_email@example.com"},
-        ["username"]
-    )
-    
-    # 查询数据
-    results = db.query(
-        "users",
-        where="username LIKE ?",
-        params=["john%"],
-        order_by="created_at DESC",
-        limit=10
-    )
-    
-    # 执行原始SQL
-    db.execute_raw("DELETE FROM users WHERE id = ?", [5])
     
 SQLiteManager()

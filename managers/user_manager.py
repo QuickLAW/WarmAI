@@ -41,25 +41,3 @@ class UserManager:
 
         user_config = SQLiteManager().query(table_name=config.db_user_config_table_name, where="user_id", params=[user_id], dump=True)
         return user_config[0]
-
-    def set_user_config(self, user_id: str, user_config: Dict) -> None:
-        """
-        设置用户配置
-
-        参数:
-        - user_id: 用户ID
-        - config: 用户配置字典
-        """
-        # 更新数据库中的用户配置
-        SQLiteManager().update(table_name=config.db_user_config_table_name, data=user_config, where="user_id = ?", where_params=[user_id])
-
-    def clear_user_conversation(self, user_id: str) -> None:
-        """
-        清空用户对话历史
-
-        参数:
-        - user_id: 用户ID
-        """
-        conversation_table_name = f'"{user_id}_conversations"'
-        # 清空数据库中的用户对话历史
-        SQLiteManager().delete(table_name=conversation_table_name)

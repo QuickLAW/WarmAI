@@ -133,12 +133,41 @@ class SQLiteManager:
         :return: 受影响的行数
         """
         set_clause = ", ".join([f"{col}=?" for col in data.keys()])
-        values = list(data.values()) + list(where_params)
+        values = list(data.values())
+        # 修复点：将where_params解包后合并到values
+        where_placeholders = where.count("?")
+        if len(where_params) != where_placeholders:
+            raise ValueError(f"WHERE条件需要{where_placeholders}个参数，但提供了{len(where_params)}个")
+        
+        values.extend(where_params)  # 正确合并参数
         
         query = f"UPDATE {table_name} SET {set_clause} WHERE {where}"
         self.cursor.execute(query, values)
         self.conn.commit()
         logger.debug(f"Updated {table_name} where {where}: {data}")
+        return self.cursor.rowcount
+    
+    def delete(
+        self,
+        table_name: str,
+        where: str = None,  # 改为可选参数
+    )-> int:
+        """
+        通用删除方法
+
+        :param table_name: 表名称
+        :param where: WHERE条件语句（可选，不传时删除整个表的数据）
+        :return: 受影响的行数
+        """
+        # 构建基础查询语句
+        query = f"DELETE FROM {table_name}"
+        # 添加WHERE条件（如果存在）
+        if where:
+            query += f" WHERE {where}"
+        
+        self.cursor.execute(query)
+        self.conn.commit()
+        logger.debug(f"Deleted from {table_name}" + (f" where {where}" if where else " (all rows)"))
         return self.cursor.rowcount
 
     def query(

@@ -1,7 +1,9 @@
 from .private_message import *
+from .commands import *
 
 __all__ = [
-    "private_message"
+    "private_message",
+    "commands"
 ]
 
 __version__ = "0.0.1"
